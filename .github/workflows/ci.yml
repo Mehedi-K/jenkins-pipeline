@@ -56,20 +56,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Ensure a real 'main' branch ref exists for the git plugin to fetch
-        run: |
-          # actions/checkout leaves the workspace in detached-HEAD state
-          # (it checks out the commit SHA directly, not a branch), so
-          # refs/heads/main doesn't actually exist yet for GitSCM to fetch
-          # from when it mirrors this checkout via file://.
-          git branch -f main HEAD
+      - name: Make the checkout writable by the container's jenkins user (uid 1000)
+        run: chmod -R a+rwX "${GITHUB_WORKSPACE}"
 
       - name: Start Jenkins (setup wizard disabled - ephemeral, CI-only instance)
         run: |
           docker run -d --name jenkins \
             -p 8080:8080 \
             -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true" \
-            -v "${GITHUB_WORKSPACE}":/repo:ro \
+            -v "${GITHUB_WORKSPACE}":/repo \
             jenkins/jenkins:lts
 
           echo "Waiting for Jenkins to come up..."
