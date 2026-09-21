@@ -84,7 +84,10 @@ jobs:
           # Modern git disables the file:// transport by default (CVE-2022-39253).
           # This is a same-machine, ephemeral, read-only checkout of the repo
           # under test, not an untrusted remote, so it's safe to allow here.
-          docker exec jenkins git config --global --add safe.directory /repo
+          # Wildcard is fine here: this is a throwaway, single-purpose
+          # container that only ever touches the one repo bind-mounted
+          # into it, torn down at the end of this CI job.
+          docker exec jenkins git config --global --add safe.directory '*'
           docker exec jenkins git config --global protocol.file.allow always
 
       - name: Create the pipeline job via the Jenkins REST API
