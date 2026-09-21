@@ -1,14 +1,18 @@
 # Plugins required to execute Jenkinsfile in this repo under
 # jenkins/jenkinsfile-runner, beyond what the "vanilla" jenkinsfile-runner
-# image already bundles (core pipeline: workflow-cps, workflow-job,
-# workflow-basic-steps, workflow-durable-task-step, pipeline-model-definition,
-# scm-api, git, etc.).
+# image already bundles as part of its core payload: workflow-cps,
+# workflow-job, workflow-multibranch, workflow-basic-steps,
+# workflow-durable-task-step, workflow-scm-step, pipeline-model-definition,
+# scm-api, configuration-as-code, and git (see vanilla-package/pom.xml
+# upstream). Deliberately NOT listing workflow-aggregator here: it is a
+# heavyweight meta-plugin whose transitive dependency set overlaps (and, in
+# testing, conflicted at boot with) plugins the image already bundles at a
+# core-matched version - everything it provides for this pipeline's syntax
+# is already present.
 #
 # One plugin short name per line, optionally pinned as name:version.
 # See README.md for how this is consumed by jenkinsfile-runner.
 
-workflow-aggregator
-git
 junit
 htmlpublisher
 ws-cleanup
