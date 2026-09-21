@@ -56,6 +56,14 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Ensure a real 'main' branch ref exists for the git plugin to fetch
+        run: |
+          # actions/checkout leaves the workspace in detached-HEAD state
+          # (it checks out the commit SHA directly, not a branch), so
+          # refs/heads/main doesn't actually exist yet for GitSCM to fetch
+          # from when it mirrors this checkout via file://.
+          git branch -f main HEAD
+
       - name: Start Jenkins (setup wizard disabled - ephemeral, CI-only instance)
         run: |
           docker run -d --name jenkins \
