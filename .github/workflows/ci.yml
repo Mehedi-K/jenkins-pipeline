@@ -7,12 +7,8 @@ on:
     branches: [ main ]
 
 env:
-  JFR_IMAGE: ghcr.io/jenkinsci/jenkinsfile-runner:jre-21-alpine
-  # Jenkins core version baked into the jenkinsfile-runner image above
-  # (jenkins.version in jenkinsci/jenkinsfile-runner's own pom.xml), used so
-  # the Plugin Installation Manager Tool resolves plugin versions that are
-  # actually compatible with that core instead of guessing "latest".
-  JENKINS_CORE_VERSION: 2.555.3
+  JENKINS_URL: http://localhost:8080
+  JENKINS_JOB: jenkins-pipeline-verify
 
 jobs:
   build-and-test:
@@ -53,48 +49,144 @@ jobs:
           retention-days: 14
 
   verify-jenkinsfile:
-    name: Verify Jenkinsfile with jenkinsfile-runner
+    name: Verify Jenkinsfile against a real Jenkins controller
     runs-on: ubuntu-latest
     needs: build-and-test
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Pull jenkinsfile-runner image
-        run: docker pull "${JFR_IMAGE}"
-
-      - name: Run the Jenkinsfile headlessly against this repo
+      - name: Start Jenkins (setup wizard disabled - ephemeral, CI-only instance)
         run: |
-          # The image's default entrypoint (jenkinsfile-runner-launcher)
-          # already hardcodes --plugins /usr/share/jenkins/ref/plugins, so
-          # passing -p a second time as an extra CLI arg is rejected
-          # ("option '--plugins' should be specified only once"). Instead,
-          # resolve our extra plugins (plugins.txt) straight into that same
-          # ref directory with the Plugin Installation Manager Tool already
-          # bundled in the image, merging with - not replacing - the plugins
-          # the "vanilla" jenkinsfile-runner image ships with, then hand off
-          # to the normal entrypoint.
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}":/workspace \
-            -v "${GITHUB_WORKSPACE}":/build \
-            --entrypoint sh \
-            "${JFR_IMAGE}" \
-            -c "
-              java -jar /app/bin/jenkins-plugin-manager.jar \
-                --jenkins-version ${JENKINS_CORE_VERSION} \
-                --plugin-file /workspace/plugins.txt \
-                --plugin-download-directory /usr/share/jenkins/ref/plugins \
-              && exec /app/bin/jenkinsfile-runner-launcher
-            "
+          docker run -d --name jenkins \
+            -p 8080:8080 \
+            -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false" \
+            -v "${GITHUB_WORKSPACE}":/repo:ro \
+            jenkins/jenkins:lts
 
-      - name: Upload sample-app build artifacts produced by the pipeline run
+          echo "Waiting for Jenkins to come up..."
+          timeout 180 bash -c "until curl -sf ${JENKINS_URL}/login >/dev/null; do sleep 3; done"
+
+      - name: Install the plugins this pipeline needs, then restart
+        run: |
+          docker exec jenkins jenkins-plugin-cli --plugins \
+            workflow-aggregator git junit htmlpublisher ws-cleanup timestamper
+
+          docker restart jenkins
+          echo "Waiting for Jenkins to come back up after the plugin restart..."
+          timeout 180 bash -c "until curl -sf ${JENKINS_URL}/login >/dev/null; do sleep 3; done"
+          # Give plugin initialization a moment to finish past the point the
+          # HTTP port starts answering.
+          sleep 10
+
+      - name: Allow the local file:// checkout of this repo
+        run: |
+          # Modern git disables the file:// transport by default (CVE-2022-39253).
+          # This is a same-machine, ephemeral, read-only checkout of the repo
+          # under test, not an untrusted remote, so it's safe to allow here.
+          docker exec jenkins git config --global --add safe.directory /repo
+          docker exec jenkins git config --global protocol.file.allow always
+
+      - name: Create the pipeline job via the Jenkins REST API
+        run: |
+          CRUMB_JSON=$(curl -sf "${JENKINS_URL}/crumbIssuer/api/json")
+          CRUMB_FIELD=$(echo "$CRUMB_JSON" | jq -r '.crumbRequestField')
+          CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
+
+          cat > job-config.xml <<'EOF'
+          <?xml version='1.1' encoding='UTF-8'?>
+          <flow-definition plugin="workflow-job">
+            <description>Runs this repository's Jenkinsfile against the real sample-app sources.</description>
+            <keepDependencies>false</keepDependencies>
+            <properties/>
+            <definition class="org.jenkinsci.plugins.workflow.cps.CpsScmFlowDefinition" plugin="workflow-cps">
+              <scm class="hudson.plugins.git.GitSCM" plugin="git">
+                <configVersion>2</configVersion>
+                <userRemoteConfigs>
+                  <hudson.plugins.git.UserRemoteConfig>
+                    <url>/repo</url>
+                  </hudson.plugins.git.UserRemoteConfig>
+                </userRemoteConfigs>
+                <branches>
+                  <hudson.plugins.git.BranchSpec>
+                    <name>*/main</name>
+                  </hudson.plugins.git.BranchSpec>
+                </branches>
+                <doGenerateSubmoduleConfigurations>false</doGenerateSubmoduleConfigurations>
+                <submoduleCfg class="empty-list"/>
+                <extensions/>
+              </scm>
+              <scriptPath>Jenkinsfile</scriptPath>
+              <lightweight>true</lightweight>
+            </definition>
+            <triggers/>
+            <disabled>false</disabled>
+          </flow-definition>
+          EOF
+
+          curl -sf -X POST "${JENKINS_URL}/createItem?name=${JENKINS_JOB}" \
+            -H "${CRUMB_FIELD}: ${CRUMB_VALUE}" \
+            -H "Content-Type: application/xml" \
+            --data-binary @job-config.xml
+
+      - name: Trigger a build and wait for it to finish
+        run: |
+          CRUMB_JSON=$(curl -sf "${JENKINS_URL}/crumbIssuer/api/json")
+          CRUMB_FIELD=$(echo "$CRUMB_JSON" | jq -r '.crumbRequestField')
+          CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
+
+          QUEUE_URL=$(curl -sf -D - -o /dev/null -X POST \
+            "${JENKINS_URL}/job/${JENKINS_JOB}/build" \
+            -H "${CRUMB_FIELD}: ${CRUMB_VALUE}" \
+            | grep -i '^Location:' | awk '{print $2}' | tr -d '\r')
+          echo "Queued at: ${QUEUE_URL}"
+
+          echo "Waiting for the build to leave the queue..."
+          BUILD_NUMBER=""
+          for i in $(seq 1 60); do
+            QUEUE_JSON=$(curl -sf "${QUEUE_URL}api/json" || true)
+            BUILD_NUMBER=$(echo "$QUEUE_JSON" | jq -r '.executable.number // empty')
+            if [ -n "$BUILD_NUMBER" ]; then break; fi
+            sleep 3
+          done
+          if [ -z "$BUILD_NUMBER" ]; then
+            echo "Build never left the queue"; exit 1
+          fi
+          echo "Running as build #${BUILD_NUMBER}"
+
+          echo "Waiting for the build to finish..."
+          RESULT=""
+          for i in $(seq 1 120); do
+            BUILD_JSON=$(curl -sf "${JENKINS_URL}/job/${JENKINS_JOB}/${BUILD_NUMBER}/api/json" || true)
+            RESULT=$(echo "$BUILD_JSON" | jq -r '.result // empty')
+            if [ -n "$RESULT" ]; then break; fi
+            sleep 5
+          done
+
+          echo "=== Console output ==="
+          curl -sf "${JENKINS_URL}/job/${JENKINS_JOB}/${BUILD_NUMBER}/consoleText" || true
+          echo "======================="
+          echo "Build result: ${RESULT:-UNKNOWN}"
+
+          [ "$RESULT" = "SUCCESS" ]
+
+      - name: Dump Jenkins container logs on failure
+        if: failure()
+        run: docker logs jenkins --tail 300
+
+      - name: Copy the pipeline's own build output out of the Jenkins container
+        if: always()
+        run: |
+          mkdir -p jenkins-run-output
+          docker cp \
+            "jenkins:/var/jenkins_home/workspace/${JENKINS_JOB}/sample-app/target" \
+            jenkins-run-output/target || echo "Nothing to copy (job may not have reached Package)"
+
+      - name: Upload build output produced by the real Jenkins run
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: jenkinsfile-runner-workspace
-          path: |
-            sample-app/target/surefire-reports/
-            sample-app/target/reports/
-            sample-app/target/*.jar
+          name: jenkins-run-output
+          path: jenkins-run-output/
           if-no-files-found: ignore
           retention-days: 14
