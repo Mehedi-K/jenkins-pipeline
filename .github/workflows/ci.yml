@@ -101,13 +101,19 @@ jobs:
           docker exec jenkins git config --global --add safe.directory '*'
           docker exec jenkins git config --global protocol.file.allow always
 
-      - name: Debug - ls-remote /repo from inside the Jenkins container
+      - name: Debug - replicate the exact fetch Jenkins performs
         run: |
-          docker exec jenkins ls -la /repo/.git/refs/heads/ || true
-          docker exec jenkins cat /repo/.git/HEAD || true
-          docker exec -u jenkins jenkins git ls-remote /repo || true
-          docker exec jenkins whoami
-          docker exec jenkins id
+          docker exec -u jenkins jenkins sh -c '
+            set -x
+            rm -rf /tmp/testws
+            git init /tmp/testws
+            cd /tmp/testws
+            git fetch --tags --force --progress -- /repo +refs/heads/*:refs/remotes/origin/*
+            git config remote.origin.url /repo
+            git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/*
+            git rev-parse refs/remotes/origin/main^{commit}
+            git branch -a -v
+          '
 
       - name: Create the pipeline job via the Jenkins REST API
         run: |
