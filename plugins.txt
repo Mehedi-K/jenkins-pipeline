@@ -1,20 +1,21 @@
-# Plugins required to execute Jenkinsfile in this repo under
-# jenkins/jenkinsfile-runner, beyond what the "vanilla" jenkinsfile-runner
-# image already bundles as part of its core payload: workflow-cps,
-# workflow-job, workflow-multibranch, workflow-basic-steps,
-# workflow-durable-task-step, workflow-scm-step, pipeline-model-definition,
-# scm-api, configuration-as-code, and git (see vanilla-package/pom.xml
-# upstream). Deliberately NOT listing workflow-aggregator here: it is a
-# heavyweight meta-plugin whose transitive dependency set overlaps (and, in
-# testing, conflicted at boot with) plugins the image already bundles at a
-# core-matched version - everything it provides for this pipeline's syntax
-# is already present.
+# Plugins this Jenkinsfile needs, installed with `jenkins-plugin-cli`
+# (bundled in the official jenkins/jenkins:lts image) against a full Jenkins
+# controller - see the "How this was verified" section in README.md.
 #
-# One plugin short name per line, optionally pinned as name:version.
-# See README.md for how this is consumed by jenkinsfile-runner.
+# Core pipeline syntax (declarative pipeline, sh/dir/checkout/archiveArtifacts)
+# ships with Jenkins itself and every officially supported plugin below pulls
+# in its own transitive dependencies automatically, so this list only needs
+# to name what the Jenkinsfile calls directly:
+#   - workflow-aggregator: declarative Pipeline plugin suite
+#   - git: SCM checkout (the Checkout stage, and this job's own definition)
+#   - junit: the `junit` step used in the Unit Tests stage
+#   - htmlpublisher: the `publishHTML` step used in the Publish Report stage
+#   - ws-cleanup: the `cleanWs()` step used in the post/cleanup block
+#   - timestamper: the `timestamps()` pipeline option
 
+workflow-aggregator
+git
 junit
 htmlpublisher
 ws-cleanup
 timestamper
-caffeine-api

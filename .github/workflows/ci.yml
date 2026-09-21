@@ -79,8 +79,7 @@ jobs:
 
       - name: Install the plugins this pipeline needs, then restart
         run: |
-          docker exec jenkins jenkins-plugin-cli --plugins \
-            workflow-aggregator git junit htmlpublisher ws-cleanup timestamper
+          docker exec jenkins jenkins-plugin-cli --plugin-file /repo/plugins.txt
 
           docker restart jenkins
           echo "Waiting for Jenkins to come back up after the plugin restart..."
@@ -92,8 +91,8 @@ jobs:
       - name: Allow the local file:// checkout of this repo
         run: |
           # Modern git disables the file:// transport by default (CVE-2022-39253).
-          # This is a same-machine, ephemeral, read-only checkout of the repo
-          # under test, not an untrusted remote, so it's safe to allow here.
+          # This is a same-machine checkout of the repo under test, not an
+          # untrusted remote, so it's safe to allow here.
           # Wildcard is fine here: this is a throwaway, single-purpose
           # container that only ever touches the one repo bind-mounted
           # into it, torn down at the end of this CI job.
