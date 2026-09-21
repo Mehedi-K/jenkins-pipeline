@@ -4,16 +4,15 @@
 ![Java](https://img.shields.io/badge/Java-17-orange?logo=openjdk&logoColor=white)
 ![Maven](https://img.shields.io/badge/Build-Maven-C71A36?logo=apachemaven&logoColor=white)
 ![JUnit5](https://img.shields.io/badge/Tests-JUnit%205-25A162?logo=junit5&logoColor=white)
-![jenkinsfile-runner](https://img.shields.io/badge/Verified%20with-jenkinsfile--runner-D24939?logo=jenkins&logoColor=white)
+![Verified](https://img.shields.io/badge/Verified%20with-real%20Jenkins%20controller-D24939?logo=jenkins&logoColor=white)
 ![CI](https://github.com/Mehedi-K/jenkins-pipeline/actions/workflows/ci.yml/badge.svg)
 
 A **Jenkins declarative pipeline-as-code** portfolio project: a real
 `Jenkinsfile` driving a Java/Maven build-test-package-report flow for a small,
-self-contained utility library, with the pipeline itself executed headlessly
-on every push using
-[`jenkinsfile-runner`](https://github.com/jenkinsci/jenkinsfile-runner) so the
-`Jenkinsfile` is continuously proven to actually work rather than just
-looking plausible.
+self-contained utility library, with the pipeline itself executed on every
+push against a real, disposable `jenkins/jenkins:lts` controller spun up in
+CI, so the `Jenkinsfile` is continuously proven to actually work rather than
+just looking plausible.
 
 This is a portfolio project focused on **CI/CD pipeline authoring**: writing
 a Jenkins pipeline the way it would be written for a real team (multiple
@@ -27,7 +26,7 @@ untested YAML/Groovy.
 ```
 jenkins-pipeline/
   Jenkinsfile                 # the pipeline under test
-  plugins.txt                 # extra Jenkins plugins jenkinsfile-runner needs
+  plugins.txt                 # Jenkins plugins this Jenkinsfile needs
   config/checkstyle.xml       # ruleset for the Static Analysis stage
   sample-app/                 # small Java/Maven library the pipeline builds
     pom.xml
@@ -85,66 +84,90 @@ Other things demonstrated:
 
 Jenkins doesn't offer a hosted "push and see the pipeline run" workflow the
 way GitHub Actions does, so proving the `Jenkinsfile` is real (not just
-syntactically plausible) takes an extra step: it is executed headlessly with
-[`jenkinsfile-runner`](https://github.com/jenkinsci/jenkinsfile-runner), the
-official tool for running a single `Jenkinsfile` against a workspace without
-standing up a full Jenkins controller/UI.
+syntactically plausible) takes an extra step. The first approach tried here
+was [`jenkinsfile-runner`](https://github.com/jenkinsci/jenkinsfile-runner)
+(the official single-shot Jenkinsfile execution tool) - it got as far as
+resolving plugins and booting, but its slim core payload deliberately strips
+`WEB-INF/detached-plugins` to shrink the image, which broke classloading for
+a plugin (`caffeine-api`) needed transitively by `script-security`, with no
+clean fix short of patching the image. Rather than ship that as an unverified
+guess, this repo verifies against a **full, real `jenkins/jenkins:lts`
+controller** instead - slower to boot, but a far more faithful stand-in for
+an actual Jenkins server, and it doesn't have that stripped-payload problem.
 
 **This is wired into `.github/workflows/ci.yml` and runs on every push/PR**,
 not just as a one-off local check - see the `verify-jenkinsfile` job. It:
 
-1. Pulls `ghcr.io/jenkinsci/jenkinsfile-runner:jre-21-alpine`.
-2. Mounts this repo into the container at both `/workspace` (where the
-   `Jenkinsfile` is auto-discovered) and `/build` (the actual pipeline
-   execution workspace, so `sample-app/` is present for the `sh` steps).
-3. Passes `plugins.txt` via `-p` so Jenkins resolves and installs the handful
-   of plugins the pipeline needs beyond what the jenkinsfile-runner "vanilla"
-   image already bundles (core pipeline support, plus `git`).
-4. Runs the real `Jenkinsfile` end to end: checkout → build → test → static
-   analysis → package → publish report, using the exact same stages a real
-   Jenkins job would run.
+1. Starts `jenkins/jenkins:lts` with the setup wizard disabled (an ephemeral,
+   unauthenticated, CI-only instance - see the security note below).
+2. Installs the plugins listed in `plugins.txt` with `jenkins-plugin-cli`
+   (bundled in the official image) and restarts to load them.
+3. Creates a real Pipeline job via the Jenkins REST API (`POST
+   /createItem`), configured with **Git SCM pointed at a `file://` checkout
+   of this same repository** and `scriptPath: Jenkinsfile` - i.e. the exact
+   same "Pipeline script from SCM" setup a real team would use, just aimed at
+   a local checkout instead of a remote GitHub URL.
+4. Triggers a build (`POST /job/.../build`), polls
+   `/job/.../lastBuild/api/json` until it finishes, and fails the CI job
+   unless the result is `SUCCESS`.
+5. Prints the full build console log either way, and uploads the pipeline's
+   own build output (surefire reports, the HTML report, the jar) as a CI
+   artifact.
 
-### Running it yourself
+A successful run's console shows every stage executing for real: `mvn`
+compiling, 48 JUnit tests passing, 0 Checkstyle violations, the jar getting
+archived, and the Surefire HTML report getting published - ending with
+`Finished: SUCCESS`. You can see this directly in any green run of the
+`verify-jenkinsfile` job (CI badge above, or `gh run list` /
+`gh run view --log`).
+
+### Verifying it yourself
+
+You need Docker. This mirrors exactly what CI does:
 
 ```bash
-docker pull ghcr.io/jenkinsci/jenkinsfile-runner:jre-21-alpine
+docker run -d --name jenkins -p 8080:8080 \
+  -e JAVA_OPTS="-Djenkins.install.runSetupWizard=false -Dhudson.plugins.git.GitSCM.ALLOW_LOCAL_CHECKOUT=true" \
+  -v "$(pwd)":/repo \
+  jenkins/jenkins:lts
 
-docker run --rm \
-  -v "$(pwd)":/workspace \
-  -v "$(pwd)":/build \
-  ghcr.io/jenkinsci/jenkinsfile-runner:jre-21-alpine \
-  -p /workspace/plugins.txt
+# wait for it to come up, then:
+docker exec jenkins jenkins-plugin-cli --plugin-file /repo/plugins.txt
+docker restart jenkins
+# wait for it to come back up, then:
+docker exec jenkins git config --global --add safe.directory '*'
+docker exec jenkins git config --global protocol.file.allow always
+
+# create + trigger the job - see .github/workflows/ci.yml for the exact
+# REST API calls (job-config.xml, crumb handling, polling for the result).
 ```
 
-- `/workspace` is where jenkinsfile-runner looks for `Jenkinsfile` by default.
-- `/build` is the actual pipeline run workspace (where `sh`/`dir` steps
-  execute) - it needs to contain `sample-app/` too, hence mounting the repo
-  to both paths.
-- `-p /workspace/plugins.txt` tells jenkinsfile-runner which additional
-  plugins to fetch (each plugin's own declared dependencies are then resolved
-  by Jenkins itself at boot against the configured update center).
+The full, exact, currently-passing sequence (including crumb/cookie
+handling and result polling) lives in `.github/workflows/ci.yml` - that file
+*is* the canonical "how to verify this locally" reference, since it's
+proven to work on every push.
 
-A successful run prints each stage's Maven output, ends with
-`Finished: SUCCESS`, and leaves `sample-app/target/` populated (surefire
-reports, the HTML report, the built jar) exactly as a real Jenkins job would.
+**Security note:** disabling the setup wizard and allowing local git
+checkouts is intentional and safe **only** for this throwaway, single-purpose
+container - it is never exposed beyond `localhost`, never connected to real
+infrastructure, and torn down at the end of the job. None of this reflects
+how you'd configure a real, persistent Jenkins controller.
 
-**Honesty note on what's actually verified:** the CI job above genuinely
-executes the pipeline's Groovy/declarative syntax and every `sh` step through
-real Jenkins pipeline execution code (via jenkinsfile-runner) - it is not a
-syntax-only lint. What it does *not* exercise is anything specific to a
-persistent Jenkins controller (e.g. cross-build history, the classic web UI,
-credentials binding, or a multibranch job's SCM webhook trigger), since
-jenkinsfile-runner is deliberately a single-shot, throwaway-controller tool.
-For that layer, see "Pointing a real Jenkins instance at this repo" below.
-Development on this machine has no local Docker daemon available, so the
-`jenkinsfile-runner` command above was designed and reasoned through against
-the tool's actual source (plugin resolution behavior, default workspace
-mounts, bundled plugin set) rather than run locally - the authoritative,
-continuously-repeated verification is the `verify-jenkinsfile` job in
-`.github/workflows/ci.yml`, which anyone can inspect via the CI badge above
-or `gh run list`. The Maven build/test/package/checkstyle steps themselves
-(the `build-and-test` CI job) were additionally run and verified directly on
-the development machine, independent of Jenkins or Docker.
+**Honesty note on what's actually verified:** this genuinely executes the
+pipeline's declarative/Groovy syntax and every `sh` step through real Jenkins
+pipeline execution code against a real controller - it is not a syntax-only
+lint, and not a single-shot/throwaway-runner shortcut either. What it does
+*not* exercise is a webhook-triggered multibranch job or credentials binding,
+since those need a reachable, persistent Jenkins instance. For that layer,
+see "Pointing a real Jenkins instance at this repo" below. Development on
+this machine has no local Docker daemon available, so this whole approach
+was iterated on and debugged directly through the GitHub Actions runner
+(which does have Docker) rather than locally - every fix described above
+(crumb/cookie handling, the local-checkout security guard, the shallow-clone
+issue, the report-path normalization) was diagnosed from a real failing run,
+not guessed. The Maven build/test/package/checkstyle steps themselves (the
+`build-and-test` CI job) were additionally run and verified directly on the
+development machine, independent of Jenkins or Docker.
 
 ## Pointing a real Jenkins instance at this repo
 
