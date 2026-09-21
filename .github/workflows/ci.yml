@@ -8,6 +8,11 @@ on:
 
 env:
   JFR_IMAGE: ghcr.io/jenkinsci/jenkinsfile-runner:jre-21-alpine
+  # Jenkins core version baked into the jenkinsfile-runner image above
+  # (jenkins.version in jenkinsci/jenkinsfile-runner's own pom.xml), used so
+  # the Plugin Installation Manager Tool resolves plugin versions that are
+  # actually compatible with that core instead of guessing "latest".
+  JENKINS_CORE_VERSION: 2.555.3
 
 jobs:
   build-and-test:
@@ -60,11 +65,27 @@ jobs:
 
       - name: Run the Jenkinsfile headlessly against this repo
         run: |
+          # The image's default entrypoint (jenkinsfile-runner-launcher)
+          # already hardcodes --plugins /usr/share/jenkins/ref/plugins, so
+          # passing -p a second time as an extra CLI arg is rejected
+          # ("option '--plugins' should be specified only once"). Instead,
+          # resolve our extra plugins (plugins.txt) straight into that same
+          # ref directory with the Plugin Installation Manager Tool already
+          # bundled in the image, merging with - not replacing - the plugins
+          # the "vanilla" jenkinsfile-runner image ships with, then hand off
+          # to the normal entrypoint.
           docker run --rm \
             -v "${GITHUB_WORKSPACE}":/workspace \
             -v "${GITHUB_WORKSPACE}":/build \
+            --entrypoint sh \
             "${JFR_IMAGE}" \
-            -p /workspace/plugins.txt
+            -c "
+              java -jar /app/bin/jenkins-plugin-manager.jar \
+                --jenkins-version ${JENKINS_CORE_VERSION} \
+                --plugin-file /workspace/plugins.txt \
+                --plugin-download-directory /usr/share/jenkins/ref/plugins \
+              && exec /app/bin/jenkinsfile-runner-launcher
+            "
 
       - name: Upload sample-app build artifacts produced by the pipeline run
         if: always()
