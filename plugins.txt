@@ -1,0 +1,15 @@
+# Plugins required to execute Jenkinsfile in this repo under
+# jenkins/jenkinsfile-runner, beyond what the "vanilla" jenkinsfile-runner
+# image already bundles (core pipeline: workflow-cps, workflow-job,
+# workflow-basic-steps, workflow-durable-task-step, pipeline-model-definition,
+# scm-api, git, etc.).
+#
+# One plugin short name per line, optionally pinned as name:version.
+# See README.md for how this is consumed by jenkinsfile-runner.
+
+workflow-aggregator
+git
+junit
+htmlpublisher
+ws-cleanup
+timestamper

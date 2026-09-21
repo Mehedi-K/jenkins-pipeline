@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  JFR_IMAGE: ghcr.io/jenkinsci/jenkinsfile-runner:jre-21-alpine
+
+jobs:
+  build-and-test:
+    name: Build & test sample-app (Maven)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17 (Temurin)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+          cache-dependency-path: sample-app/pom.xml
+
+      - name: mvn verify (compile, unit tests, checkstyle, package)
+        working-directory: sample-app
+        run: |
+          ./mvnw -B -ntp clean verify checkstyle:check
+
+      - name: Upload Surefire reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: sample-app/target/surefire-reports/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload built jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: sample-app-jar
+          path: sample-app/target/sample-app.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-jenkinsfile:
+    name: Verify Jenkinsfile with jenkinsfile-runner
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Pull jenkinsfile-runner image
+        run: docker pull "${JFR_IMAGE}"
+
+      - name: Run the Jenkinsfile headlessly against this repo
+        run: |
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}":/workspace \
+            -v "${GITHUB_WORKSPACE}":/build \
+            "${JFR_IMAGE}" \
+            -p /workspace/plugins.txt
+
+      - name: Upload sample-app build artifacts produced by the pipeline run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jenkinsfile-runner-workspace
+          path: |
+            sample-app/target/surefire-reports/
+            sample-app/target/reports/
+            sample-app/target/*.jar
+          if-no-files-found: ignore
+          retention-days: 14
