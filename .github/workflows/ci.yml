@@ -59,6 +59,14 @@ jobs:
       - name: Make the checkout writable by the container's jenkins user (uid 1000)
         run: chmod -R a+rwX "${GITHUB_WORKSPACE}"
 
+      - name: Debug - inspect the checkout's ref state
+        run: |
+          git symbolic-ref -q HEAD || echo "(detached HEAD)"
+          git branch -a -v
+          git rev-parse HEAD
+          cat .git/HEAD
+          ls -la .git/refs/heads/ || true
+
       - name: Start Jenkins (setup wizard disabled - ephemeral, CI-only instance)
         run: |
           docker run -d --name jenkins \
