@@ -89,7 +89,10 @@ jobs:
 
       - name: Create the pipeline job via the Jenkins REST API
         run: |
-          CRUMB_JSON=$(curl -sf "${JENKINS_URL}/crumbIssuer/api/json")
+          # The default crumb issuer binds a crumb to the session that
+          # requested it, so the crumb-fetch and the POST that uses it must
+          # share a cookie jar - otherwise Jenkins rejects it as invalid.
+          CRUMB_JSON=$(curl -sf -c cookies.txt "${JENKINS_URL}/crumbIssuer/api/json")
           CRUMB_FIELD=$(echo "$CRUMB_JSON" | jq -r '.crumbRequestField')
           CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
 
@@ -124,7 +127,7 @@ jobs:
           </flow-definition>
           EOF
 
-          HTTP_CODE=$(curl -s -o response.txt -w '%{http_code}' -X POST \
+          HTTP_CODE=$(curl -s -b cookies.txt -o response.txt -w '%{http_code}' -X POST \
             "${JENKINS_URL}/createItem?name=${JENKINS_JOB}" \
             -H "${CRUMB_FIELD}: ${CRUMB_VALUE}" \
             -H "Content-Type: application/xml" \
@@ -135,11 +138,11 @@ jobs:
 
       - name: Trigger a build and wait for it to finish
         run: |
-          CRUMB_JSON=$(curl -sf "${JENKINS_URL}/crumbIssuer/api/json")
+          CRUMB_JSON=$(curl -sf -c cookies.txt "${JENKINS_URL}/crumbIssuer/api/json")
           CRUMB_FIELD=$(echo "$CRUMB_JSON" | jq -r '.crumbRequestField')
           CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
 
-          BUILD_HEADERS=$(curl -s -D - -o /dev/null -X POST \
+          BUILD_HEADERS=$(curl -s -b cookies.txt -D - -o /dev/null -X POST \
             "${JENKINS_URL}/job/${JENKINS_JOB}/build" \
             -H "${CRUMB_FIELD}: ${CRUMB_VALUE}")
           echo "$BUILD_HEADERS"
