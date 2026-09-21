@@ -55,17 +55,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # A shallow clone (the actions/checkout default) makes this repo
+          # a "shallow" git repository. Fetching from it locally then fails
+          # with "shallow roots are not allowed to be updated" once the git
+          # plugin tries to populate refs/remotes/origin/main in the job's
+          # workspace. A full clone avoids that entirely.
+          fetch-depth: 0
 
       - name: Make the checkout writable by the container's jenkins user (uid 1000)
         run: chmod -R a+rwX "${GITHUB_WORKSPACE}"
-
-      - name: Debug - inspect the checkout's ref state
-        run: |
-          git symbolic-ref -q HEAD || echo "(detached HEAD)"
-          git branch -a -v
-          git rev-parse HEAD
-          cat .git/HEAD
-          ls -la .git/refs/heads/ || true
 
       - name: Start Jenkins (setup wizard disabled - ephemeral, CI-only instance)
         run: |
@@ -100,20 +99,6 @@ jobs:
           # into it, torn down at the end of this CI job.
           docker exec jenkins git config --global --add safe.directory '*'
           docker exec jenkins git config --global protocol.file.allow always
-
-      - name: Debug - replicate the exact fetch Jenkins performs
-        run: |
-          docker exec -u jenkins jenkins sh -c '
-            set -x
-            rm -rf /tmp/testws
-            git init /tmp/testws
-            cd /tmp/testws
-            git fetch --tags --force --progress -- /repo +refs/heads/*:refs/remotes/origin/*
-            git config remote.origin.url /repo
-            git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/*
-            git rev-parse refs/remotes/origin/main^{commit}
-            git branch -a -v
-          '
 
       - name: Create the pipeline job via the Jenkins REST API
         run: |
