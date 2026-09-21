@@ -94,7 +94,7 @@ jobs:
           CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
 
           cat > job-config.xml <<'EOF'
-          <?xml version='1.1' encoding='UTF-8'?>
+          <?xml version='1.0' encoding='UTF-8'?>
           <flow-definition plugin="workflow-job">
             <description>Runs this repository's Jenkinsfile against the real sample-app sources.</description>
             <keepDependencies>false</keepDependencies>
@@ -124,10 +124,14 @@ jobs:
           </flow-definition>
           EOF
 
-          curl -sf -X POST "${JENKINS_URL}/createItem?name=${JENKINS_JOB}" \
+          HTTP_CODE=$(curl -s -o response.txt -w '%{http_code}' -X POST \
+            "${JENKINS_URL}/createItem?name=${JENKINS_JOB}" \
             -H "${CRUMB_FIELD}: ${CRUMB_VALUE}" \
             -H "Content-Type: application/xml" \
-            --data-binary @job-config.xml
+            --data-binary @job-config.xml)
+          echo "HTTP ${HTTP_CODE}"
+          cat response.txt
+          [ "$HTTP_CODE" -lt 400 ]
 
       - name: Trigger a build and wait for it to finish
         run: |
@@ -135,10 +139,14 @@ jobs:
           CRUMB_FIELD=$(echo "$CRUMB_JSON" | jq -r '.crumbRequestField')
           CRUMB_VALUE=$(echo "$CRUMB_JSON" | jq -r '.crumb')
 
-          QUEUE_URL=$(curl -sf -D - -o /dev/null -X POST \
+          BUILD_HEADERS=$(curl -s -D - -o /dev/null -X POST \
             "${JENKINS_URL}/job/${JENKINS_JOB}/build" \
-            -H "${CRUMB_FIELD}: ${CRUMB_VALUE}" \
-            | grep -i '^Location:' | awk '{print $2}' | tr -d '\r')
+            -H "${CRUMB_FIELD}: ${CRUMB_VALUE}")
+          echo "$BUILD_HEADERS"
+          QUEUE_URL=$(echo "$BUILD_HEADERS" | grep -i '^Location:' | awk '{print $2}' | tr -d '\r')
+          if [ -z "$QUEUE_URL" ]; then
+            echo "No queue Location header - build trigger request failed"; exit 1
+          fi
           echo "Queued at: ${QUEUE_URL}"
 
           echo "Waiting for the build to leave the queue..."
