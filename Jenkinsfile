@@ -95,6 +95,23 @@ pipeline {
             steps {
                 dir(env.APP_DIR) {
                     sh './mvnw -B -ntp surefire-report:report'
+                    // maven-surefire-report-plugin writes to target/reports/
+                    // or target/site/ depending on which site skin Maven
+                    // resolves at build time (both are legitimate outcomes
+                    // of the same goal on different environments) - copy
+                    // whichever one exists to a fixed, predictable path so
+                    // publishHTML below always finds it.
+                    sh '''
+                        mkdir -p target/surefire-html-report
+                        if [ -f target/reports/surefire.html ]; then
+                            cp target/reports/surefire.html target/surefire-html-report/index.html
+                        elif [ -f target/site/surefire-report.html ]; then
+                            cp target/site/surefire-report.html target/surefire-html-report/index.html
+                        else
+                            echo "No surefire HTML report found under target/reports or target/site" >&2
+                            exit 1
+                        fi
+                    '''
                 }
             }
             post {
@@ -103,8 +120,8 @@ pipeline {
                         allowMissing: true,
                         alwaysLinkToLastBuild: true,
                         keepAll: true,
-                        reportDir: "${env.APP_DIR}/target/reports",
-                        reportFiles: 'surefire.html',
+                        reportDir: "${env.APP_DIR}/target/surefire-html-report",
+                        reportFiles: 'index.html',
                         reportName: 'Surefire HTML Report'
                     ])
                 }
